@@ -42,6 +42,7 @@ import org.apache.hadoop.util.ToolRunner;
 import com.google.common.collect.Lists;
 import com.google.common.collect.Sets;
 import com.netflix.aegisthus.input.AegisthusInputFormat;
+import com.netflix.aegisthus.mapred.map.CassMapper;
 import com.netflix.aegisthus.mapred.reduce.CassReducer;
 import com.netflix.aegisthus.tools.DirectoryWalker;
 
@@ -132,7 +133,7 @@ public class Aegisthus extends Configured implements Tool {
 		job.setMapOutputKeyClass(Text.class);
 		job.setMapOutputValueClass(Text.class);
 		job.setOutputFormatClass(TextOutputFormat.class);
-		job.setMapperClass(Map.class);
+		job.setMapperClass(CassMapper.class);
 		job.setReducerClass(CassReducer.class);
 		List<Path> paths = Lists.newArrayList();
 		if (cl.hasOption(OPT_INPUT)) {
