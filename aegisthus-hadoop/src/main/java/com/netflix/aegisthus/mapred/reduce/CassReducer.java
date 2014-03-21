@@ -112,6 +112,10 @@ public class CassReducer extends Reducer<Text, Text, Text, Text> {
 			// cassandra hasn't discarded it.
 			List<String> delete = Lists.newArrayList();
 			for (Map.Entry<String, Object> e : columns.entrySet()) {
+				if (e.getValue() instanceof Long) {
+				    continue;	
+				}
+				
 				@SuppressWarnings("unchecked")
 				Long ts = (Long) ((List<Object>) e.getValue()).get(2);
 				if (ts < deletedAt) {
