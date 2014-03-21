@@ -17,6 +17,7 @@ package com.netflix.aegisthus.mapred.reduce;
 
 import java.io.IOException;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -40,8 +41,10 @@ public class CassReducer extends Reducer<Text, Text, Text, Text> {
 	
 	public void reduce(Text key, Iterable<Text> values, Context ctx)
 			throws IOException, InterruptedException {
-		Map<String, Object> columns = null;
-		Object rowKey = null;
+		Map<String, Map<String, Object>> mergedData = Maps.newHashMap();
+		Set<String> masterSetColumnNames = Sets.newHashSet();
+		String referenceToken = null;
+		
 		Long deletedAt = Long.MIN_VALUE;
 		// If we only have one distinct value we don't need to process
 		// differences, which is slow and should be avoided.
@@ -50,60 +53,111 @@ public class CassReducer extends Reducer<Text, Text, Text, Text> {
 			valuesSet.add(new Text(value));
 		}
 		if (valuesSet.size() == 1) {
-			ctx.write(key, new Text(valuesSet.iterator().next().toString()));
+			ctx.write(key, new Text("0"));
 			return;
 		}
+		
 		for (Text val : valuesSet) {
-			Map<String, Object> map = as.deserialize(val.toString());
+			String[] rowVals = val.toString().split(AegisthusSerializer.VAL_DELIMITER);
+			String token = rowVals[1];
+			System.out.println("Token : " + token);
+
+			if (referenceToken == null) {
+				referenceToken = token;
+			}
+
+			Map<String, Object> map = as.deserialize(rowVals[0]);
 			// The json has one key value pair, the data is always under the
 			// first key so do it once to save lookup
-			rowKey = map.remove(AegisthusSerializer.KEY);
+			map.remove(AegisthusSerializer.KEY);
 			Long curDeletedAt = (Long) map.remove(AegisthusSerializer.DELETEDAT);
-			if (curDeletedAt > deletedAt) {
-				deletedAt = curDeletedAt;
-			}
+			
+			
+			Map<String, Object> columns = mergedData.get(token);
 			if (columns == null) {
 				columns = Maps.newTreeMap();
+				mergedData.put(token, columns);
+				columns.put(AegisthusSerializer.DELETEDAT, Long.MIN_VALUE);
 				columns.putAll(map);
-			} else {
-				Set<String> columnNames = Sets.newHashSet();
-				columnNames.addAll(map.keySet());
-				columnNames.addAll(columns.keySet());
+			} 
+			
+			deletedAt = (Long) columns.get(AegisthusSerializer.DELETEDAT);
+			
+			if (curDeletedAt > deletedAt) {
+				deletedAt = curDeletedAt;
+				columns.put(AegisthusSerializer.DELETEDAT, deletedAt);
+			}
 
-				for (String columnName : columnNames) {
-					boolean oldKey = columns.containsKey(columnName);
-					boolean newKey = map.containsKey(columnName);
-					if (oldKey && newKey) {
-						if (getTimestamp(map, columnName) > getTimestamp(columns, columnName)) {
-							columns.put(columnName, map.get(columnName));
-						}
-					} else if (newKey) {
+			Set<String> columnNames = Sets.newHashSet();
+			columnNames.addAll(map.keySet());
+			columnNames.addAll(columns.keySet());
+			masterSetColumnNames.addAll(map.keySet());
+			
+			for (String columnName : columnNames) {
+				boolean oldKey = columns.containsKey(columnName);
+				boolean newKey = map.containsKey(columnName);
+				if (oldKey && newKey) {
+					if (getTimestamp(map, columnName) > getTimestamp(columns, columnName)) {
 						columns.put(columnName, map.get(columnName));
 					}
+				} else if (newKey) {
+					columns.put(columnName, map.get(columnName));
 				}
 			}
+			
+			// When cassandra compacts it removes columns that are in deleted rows
+			// that are older than the deleted timestamp.
+			// we will duplicate this behavior. If the etl needs this data at some
+			// point we can change, but it is only available assuming
+			// cassandra hasn't discarded it.
+			List<String> delete = Lists.newArrayList();
+			for (Map.Entry<String, Object> e : columns.entrySet()) {
+				@SuppressWarnings("unchecked")
+				Long ts = (Long) ((List<Object>) e.getValue()).get(2);
+				if (ts < deletedAt) {
+					delete.add(e.getKey());
+				}
+			}
+
+			for (String k : delete) {
+				columns.remove(k);
+			}
+			
 		}
-		// When cassandra compacts it removes columns that are in deleted rows
-		// that are older than the deleted timestamp.
-		// we will duplicate this behavior. If the etl needs this data at some
-		// point we can change, but it is only available assuming
-		// cassandra hasn't discarded it.
-		List<String> delete = Lists.newArrayList();
-		for (Map.Entry<String, Object> e : columns.entrySet()) {
-			@SuppressWarnings("unchecked")
-			Long ts = (Long) ((List<Object>) e.getValue()).get(2);
-			if (ts < deletedAt) {
-				delete.add(e.getKey());
+		
+		//checking on data on all nodes
+		Iterator<String> columnNameIter = masterSetColumnNames.iterator();
+		Map<String, Object> referenceRow = mergedData.get(referenceToken);
+		while (columnNameIter.hasNext()) {
+		    String colName = columnNameIter.next();
+		    
+		    //reference row does not have such column name
+		    if (!referenceRow.containsKey(colName)) {
+		    	ctx.write(key, new Text("1"));
+				return;
+		    }
+		    
+		    Object referenceCol = referenceRow.get(colName);
+
+		    //for each node or token
+			for (Map.Entry<String, Map<String, Object>> e : mergedData.entrySet()) {
+				Map<String, Object> targetRow = e.getValue();
+				
+				//target row does not have such column name
+			   	if (!targetRow.containsKey(colName)) {
+			   		ctx.write(key, new Text("1"));
+					return;
+			   	}
+			   	
+			   	//reference col value is not equal to target col val
+			   	if (!referenceCol.equals(targetRow.get(colName))) {
+			   		ctx.write(key, new Text("1"));
+					return;
+			   	}
 			}
 		}
 
-		for (String k : delete) {
-			columns.remove(k);
-		}
-
-		columns.put(AegisthusSerializer.DELETEDAT, deletedAt);
-		columns.put(AegisthusSerializer.KEY, rowKey);
-		ctx.write(key, new Text(AegisthusSerializer.serialize(columns)));
+		ctx.write(key, new Text("0"));
 	
 	}
 

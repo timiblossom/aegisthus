@@ -26,10 +26,12 @@ public class CassMapper extends Mapper<Text, Text, Text, Text> {
 		AegSplit split = (AegSplit) context.getInputSplit();
 		Path filePath = split.getPath();
 		String fileName = filePath.getName();
+		Path tokenLevelPath = filePath.getParent().getParent().getParent().getParent().getParent();
+		String token = tokenLevelPath.getName();
 		
         //add my signature
-		map.put("minh-token", fileName);	
-		context.write(key, new Text(as.serialize(map)));
+		//map.put("minh-token", fileName);	
+		context.write(key, new Text(value.toString() + AegisthusSerializer.VAL_DELIMITER + token));
 		
 	}
 	

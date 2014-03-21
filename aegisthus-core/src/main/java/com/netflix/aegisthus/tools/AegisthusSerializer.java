@@ -36,6 +36,7 @@ public class AegisthusSerializer {
 	private static final Logger LOG = LoggerFactory.getLogger(AegisthusSerializer.class);
 	public static String DELETEDAT = "DELETEDAT";
 	public static String KEY = "$$KEY$$";
+	public static String VAL_DELIMITER = " ==== ";
 	protected static JsonFactory jsonFactory = new JsonFactory();
 
 	static {
